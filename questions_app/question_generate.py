@@ -2,7 +2,6 @@ import streamlit as st
 import datetime
 from openai import OpenAI
 import random
-from fpdf import FPDF, FPDFException
 import io
 import os
 import textwrap
