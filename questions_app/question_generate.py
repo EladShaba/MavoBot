@@ -1,27 +1,17 @@
 import streamlit as st
 import datetime
-import os
 from openai import OpenAI
-import json
+import random
+from fpdf import FPDF, FPDFException
+import io
+import os
+import textwrap
+import unicodedata
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
-
-key = [
-    "tf_time_complexity",
-    "memory",
-    "analyze",
-    "few_shot_findroot",
-    "writetime",
-    "generator",
-    "Coding question",
-    "compression",
-    "Explain"
-]
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 def generate_prompt(question_type, topics, difficulty):
-    topics_str = ", ".join(topics)
+    topics_str = ", ".join(map(str, topics))
     
     base_intro = (
         f"You are ExamGenGPT, a professional CS exam question generator.\n"
@@ -31,8 +21,18 @@ def generate_prompt(question_type, topics, difficulty):
         f"Do not include answers or explanations — just the questions.\n"
     )
 
+    formatting_instructions = (
+        "\n\n---\n\n"
+        "**Formatting Instructions:**\n"
+        "- Use Markdown formatting where appropriate.\n"
+        "- Use LaTeX for all mathematical notation:\n"
+        "   - Inline: $E = mc^2$\n"
+        "   - Block: $$a^2 + b^2 = c^2$$\n"
+        "- Ensure all LaTeX expressions are valid so they render correctly in a markdown-compatible renderer.\n"
+    )
+
     if question_type == "Multiple Choice":
-        return base_intro + (
+        question_body =(
             "Format: Provide a question followed by 4 answer options (A–D)., or a statment followed by True / false \n"
             "Example for time complexity:\n"
             "For each of the following 4 statements, indicate whether it is True or False.\n\nExample 1:\nStatement: 2^{{2n}} = O(2^n)\n\nStatement 1: ∑_{{i=1}^{{n}} i = O(n)\n\nStatement 2: There exist constants b > 0, t > 0 such that n^t = O(b^n)\n\nStatement 3: log(n!) = O(n)\n\nStatement 4: If f(n) = O(n^2), then log(f(n)) = O(log n)"
@@ -43,25 +43,25 @@ def generate_prompt(question_type, topics, difficulty):
         )
     
     elif question_type == "Code analysis":
-        return base_intro + (
+        question_body = (
             "Format: Provide a complex Python code snippet and ask questions about the output, time complexity, or other complex ideas.\n"
             "Example:\n"
             "Example 1:\nTask: The function find_root uses the bisection method to find a root of a continuous function f in the interval [L, U]. Determine the minimal and maximal number of iterations possible.\nInterval: L = 128.0, U = 256.0\n\ndef find_root(f, L, U, EPS=10**-10, TOL=100): \n    assert L<U \n    assert f(L)<0 and f(U)>0 \n\n    for i in range(TOL): \n        M = (L+U)/2 \n        fM = f(M) \n        print(\"Iteration\", i, \"L =\", L, \"M =\", M, \"U =\", U, \"f(M) =\", fM) \n\n if abs(fM) <= EPS: \n            print(\"Found an approximated root\") \n            return M \n        elif not L < M < U: \n            print(\"Search interval too small\") \n            return None \n        elif fM < 0: \n            L = M # continue search in upper half \n        else: # fM > 0 \n            U = M # continue search in lower half    \n\n    print(\"No root found in\", TOL, \"iterations\") \n    return None \n Example 2:Analyze the worst-case time complexity of the following recursive function f(L) in terms of O(⋅), and draw the recursion tree for a list of size n=10.\nExample 1:\nCode:\ndef f(L):\n    n = len(L)\n    if n <= 2:\n        return\n    f(L[:n//3])\n    f(L[n//3:])"
         )
 
     elif question_type == "Memory model":
-        return base_intro + (
+        question_body = (
             "Format: Provide a Complex Python code snippet and ask the user to Draw the memory diagram at the end of executing the following Python code at the final state of the memory space and the namespace.\n"
             "Example 1:\nCode:\na = 1000\nb = [a, a]\ndef f(a, b):\n    a = b\n    b = b[0]\n    a[0] = 2022\n    return a\nx = f(a, b)\n\nExample 2:\nCode:\ndef update(val, arr):\n    arr[0] = val\nlst = [0]\nupdate(5, lst)"
         )
 
     elif question_type == "Fill in the Blanks":
-        return base_intro + (
+        question_body = (
             "Format: code snippet with a blank (__), and ask the user to fill it.\n"
             "in order to generate a complex idea, make sure you ranomly choose a leetcode/codeforce question, then replace critical steps (or even whole chunks) of code with blanks and ask to fill it\n"
         )
     elif question_type == "Write code":
-        return base_intro + (
+        question_body = (
        "Format: Provide a challenging coding question that is complex and aligned with the specified topics. The question can either include partial code or ask the student to implement everything from scratch.\n"
 "To design a high-quality question, consider combining ideas or elements from two relevant LeetCode or Codeforces problems (based on tags or topics) to increase difficulty and depth.\n"
         "Example 1:\n"
@@ -119,14 +119,15 @@ def generate_prompt(question_type, topics, difficulty):
     )
 
     else:
-        return base_intro + "Create a general short-answer question based on one of the topics of the course."
+        question_body = "Create a general short-answer question based on one of the topics of the course."
+    return base_intro + question_body + formatting_instructions
 
 # --- Session state init ---
 if "history" not in st.session_state:
     st.session_state.history = []
 
 st.set_page_config(page_title="LLM Question Generator", layout="wide")
-st.title("💡 LLM-Powered Question Generator")
+st.title("LLM Powered Question Generator")
 
 
 def call_openai_chat(prompt, temperature):
@@ -165,36 +166,35 @@ with col3:
     temperature = st.slider("Model Temperature", 0.0, 1.0, 0.7, step=0.05)
 
 # --- Topic Search & Tagging ---
-st.markdown("####Select Topics")
+st.markdown("#### Select Topics")
+
 all_topics = [
-    # Binary & Text Representation
-    "Binary Numbers", "ASCII", "Unicode",
-    
-    # Floating Point
-    "Floating-Point Numbers",
-    
-    # Sorting & Complexity
-    "Selection Sort", "Merge Sort", "Time Complexity and Space Complexity",
-    
-    # Recursion
+    "Binary Numbers", "Floating Point Numbers",
+    "Selection Sort", "Merge Sort", "Time Complexity",
     "Recursion", "Factorial", "Fibonacci", "Recursive Quicksort", "Recursive Merge Sort", "Towers of Hanoi",
-    
-    # Object-Oriented Programming
-    "Object-Oriented Programming", "Classes", "Objects",
-    
-    # Cryptography Basics
-    "Primality Testing", "Diffie-Hellman Key Exchange",
-    
-    # Data Structures
-    "Linked Lists", "Binary Search Trees",
-    
-    # Generators
-    "Generators",
-    
-    # Text Compression
-    "Huffman Coding", "Lempel-Ziv (LZW) Compression"
+    "Object Oriented Programming","List comprehensions",
+    "Primality Testing", "Diffie-Hellman Key Exchange","Binary search",
+    "Linked Lists", "Binary Search Trees","Two pointers","Sliding window","Matrices",
+    "Generators", "Huffman Coding", "Lempel-Ziv (LZW) Compression"
 ]
-selected_topics = st.multiselect("Search or Select Topics", options=all_topics)
+
+if "topics_input" not in st.session_state:
+    st.session_state.topics_input = ""
+
+# Add a button to randomize topics
+if st.button("Picks some random topics"):
+    k = random.choice([2, 3])
+    random_topics = random.sample(all_topics, k=k)
+    st.session_state.topics_input = ", ".join(random_topics)
+
+topics_input = st.text_input(
+    label="Enter topics separated by commas",
+    placeholder="Recursion, Towers of Hanoi, Recursive Quicksort, Huffman Coding, Linked List",
+    key="topics_input",
+    help="Example: Recursion, Towers of Hanoi, Huffman Coding"
+)
+
+selected_topics = [topic.strip() for topic in st.session_state.topics_input.split(",") if topic.strip()]
 
 # --- Generate Button and Logic for Continuous Generation ---
 st.markdown("### Generate Question")
@@ -202,16 +202,23 @@ st.markdown("### Generate Question")
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-generate_new_question = st.button("Generate New Question")
+col_button, col_message = st.columns([1, 3])
+
+with col_button:
+    generate_new_question = st.button("Generate New Question", disabled=len(selected_topics) == 0)
+
+with col_message:
+    if not selected_topics:
+        st.info("Please enter at least one topic to generate questions.")
 
 if generate_new_question:
-    with st.spinner("Generating with ChatGPT..."):
+    with st.spinner("Generating..."):
         prompt = generate_prompt(question_type, selected_topics, difficulty)
         response = call_openai_chat(prompt, temperature)
 
         st.session_state.history.append({
             "question": response.strip(),
-            "answer": "",  # No answer included
+            "answer": "",
             "type": question_type,
             "topics": selected_topics,
             "timestamp": datetime.datetime.now().isoformat()
@@ -223,7 +230,8 @@ if st.session_state.history:
     st.subheader("Generated Questions")
     for item in reversed(st.session_state.history):
         with st.expander(f"{item['type']} | Topics: {', '.join(item['topics'])}"):
-            st.markdown(f"**Question:**\n{item['question']}")
+            st.markdown(f"<p><b>Question:</b></p>\n{item['question']}", unsafe_allow_html=True)
+
 
 # --- Sidebar: Session History ---
 st.sidebar.markdown("## Session History")
