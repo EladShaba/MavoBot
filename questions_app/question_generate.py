@@ -2,12 +2,14 @@ import streamlit as st
 import datetime
 from openai import OpenAI
 import random
-import io
-import os
-import textwrap
-import unicodedata
-
+import re
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+
+if 'history' not in st.session_state:
+    st.session_state.history = []
+if "question_chats" not in st.session_state:
+    st.session_state.question_chats = {}
 
 def generate_prompt(question_type, topics, difficulty):
     topics_str = ", ".join(map(str, topics))
@@ -28,6 +30,9 @@ def generate_prompt(question_type, topics, difficulty):
         "   - Inline: $E = mc^2$\n"
         "   - Block: $$a^2 + b^2 = c^2$$\n"
         "- Ensure all LaTeX expressions are valid so they render correctly in a markdown-compatible renderer.\n"
+        "- Start each question block with a level 3 heading:\n"
+        "   - Example: `### Question 1:`\n"
+        "- Separate each question block with a horizontal rule (`---`) on its own line.\n"
     )
 
     if question_type == "Multiple Choice":
@@ -128,6 +133,53 @@ if "history" not in st.session_state:
 st.set_page_config(page_title="LLM Question Generator", layout="wide")
 st.title("LLM Powered Question Generator")
 
+# --- Inject CSS for question boxes ---
+st.markdown(
+    """
+    <style>
+      .question-box {
+        background-color: #f9f9f9;
+        color: #111;
+        padding: 1rem;
+        border-radius: 0.75rem;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+        margin-bottom: 0.5rem;
+        border-left: 5px solid #4f8bf9;
+      }
+      .question-box h4 {
+        margin-top: 0;
+        color: #333;
+      }
+      .chat-message {
+        padding: 0.75rem;
+        border-radius: 0.5rem;
+        margin-bottom: 0.5rem;
+        color: #000;
+        width: 80%;
+      }
+      .user-message {
+        background-color: #e6f3ff;
+        margin-left: auto;
+        color: #000;
+        margin-right: 0;
+      }
+      .assistant-message {
+        background-color: #f0f0f0;
+        margin-right: auto;
+        color: #000;
+        margin-left: 0;
+      }
+      .chat-container {
+        background-color: #fafafa;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1.5rem;
+        border: 1px solid #eee;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 def call_openai_chat(prompt, temperature):
     messages=[
@@ -146,7 +198,7 @@ def call_openai_chat(prompt, temperature):
     for chunk in response_stream:
         content = getattr(chunk, "text", None)
         if content:
-            print(content, end="", flush=True)  # Debug: print as it streams
+            print(content, end="", flush=True)
             full_text += content
     return full_text
 
@@ -214,22 +266,84 @@ if generate_new_question:
     with st.spinner("Generating..."):
         prompt = generate_prompt(question_type, selected_topics, difficulty)
         response = call_openai_chat(prompt, temperature)
+        question_blocks = re.split(r"\n---\n", response.strip())
+        question_blocks = [q.strip() for q in question_blocks if q.strip()]
 
-        st.session_state.history.append({
-            "question": response.strip(),
-            "answer": "",
-            "type": question_type,
-            "topics": selected_topics,
-            "timestamp": datetime.datetime.now().isoformat()
-        })
+        # Save to session state
+        timestamp = datetime.datetime.now().isoformat()
+        for q in question_blocks:
+            question_id = f"{timestamp}_{len(st.session_state.history)}"
+            st.session_state.history.append({
+                "id": question_id,
+                "question": q,
+                "answer": "",
+                "type": question_type,
+                "topics": selected_topics,
+                "timestamp": timestamp
+            })
+            # Initialize chat history for this question
+            st.session_state.question_chats[question_id] = []
+
 
 # --- Display Generated Questions ---
 if st.session_state.history:
     st.markdown("---")
     st.subheader("Generated Questions")
-    for item in reversed(st.session_state.history):
-        with st.expander(f"{item['type']} | Topics: {', '.join(item['topics'])}"):
-            st.markdown(f"<p><b>Question:</b></p>\n{item['question']}", unsafe_allow_html=True)
+    # Display only the latest batch
+    for i, item in enumerate(st.session_state.history):
+        question_id = item.get("id", f"q_{i}")
+        st.markdown(f'<div class="question-box">{item["question"]}</div>', unsafe_allow_html=True)
+        # Chat interface for this question
+        with st.expander("Discuss the question"):
+            if question_id in st.session_state.question_chats:
+                for msg in st.session_state.question_chats[question_id]:
+                    if msg["role"] == "user":
+                        st.markdown(f"**You:** {msg['content']}")
+                    else:
+                        st.markdown(f"**Assistant:** {msg['content']}")
+            user_question = st.text_input(
+                "Ask a question about this problem:",
+                key=f"question_input_{question_id}"
+            )
+
+            if st.button("Ask", key=f"ask_button_{question_id}") and user_question:
+                # Ensure chat history exists
+                if question_id not in st.session_state.question_chats:
+                    st.session_state.question_chats[question_id] = []
+
+                # Add user question immediately
+                st.session_state.question_chats[question_id].append({
+                    "role": "user",
+                    "content": user_question
+                })
+
+                with st.spinner("Thinking..."):
+                    prompt = f"""
+                    You are ExamGenGPT, a professional CS exam question generator for a university-level advanced Introduction to Computer Science course.
+                    The following is a question for the final exam generated by you:
+
+                    {item["question"]}
+
+                    I want you to: {user_question}
+
+
+                    "**Formatting Instructions:**"
+                    "- Use Markdown formatting where appropriate."
+                    "- Use LaTeX for all mathematical notation:"
+                    "   - Inline: $E = mc^2$"
+                    "   - Block: $$a^2 + b^2 = c^2$$"
+                    "- Ensure all LaTeX expressions are valid so they render correctly in a markdown-compatible renderer.\n"
+                    "- Understand when to use line break and spaces"
+                    "- Separate each question block with a horizontal rule (`---`) on its own line."
+
+                    """
+                    response = call_openai_chat(prompt, temperature=0.5)
+
+                    st.session_state.question_chats[question_id].append({
+                        "role": "assistant",
+                        "content": response
+                    })
+                    st.rerun()
 
 
 # --- Sidebar: Session History ---
@@ -239,7 +353,3 @@ for item in reversed(st.session_state.history):
         st.markdown(f"**Topics:** {', '.join(item['topics'])}")
         st.markdown(item['question'])
         st.markdown(f"**Answer:** {item['answer']}")
-
-# --- Back Button ---
-if st.button("Go Back"):
-    st.experimental_rerun()
